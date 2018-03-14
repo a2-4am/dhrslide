@@ -1,0 +1,414 @@
+!cpu 6502
+!to "../build/DHRSLIDE.SYSTEM#FF2000",plain
+*=$2000
+;
+; DHRSLIDE.SYSTEM
+; (c) 2018 by 4am
+; a small DHGR graphics slideshow
+; loads first .a2fc file in current directory,
+; displays it,
+; waits,
+; finds next .a2fc file in same directory,
+; repeats endlessly until keypress,
+; quits via MLI
+;
+; known bugs:
+; - does not reconnect /RAM properly, not sure why
+;
+
+;
+; application-specific addresses
+;
+entry          = $82
+aDirData       = $1600
+aDirBuff       = $1800
+aFileBuff      = $1C00
+;
+; application constants
+;
+TRUE           = $00
+FALSE          = $FF
+;
+; ProDOS addresses
+;
+MLI            = $BF00               ; ProDOS MLI entry point
+NODEV          = $BF10               ; means 'no device connected'
+RAM32          = $BF26               ; S3,D2 /RAM device
+DEVCNT         = $BF31               ; ProDOS device count
+DEVLST         = $BF32               ; ProDOS device list
+MACHID         = $BF98               ; machine identification byte
+;
+; ProDOS constants
+;
+kMLIGetPrefix  = $C7
+kMLIGetPrefixCount = 1
+kMLIOpen       = $C8
+kMLIOpenCount  = 3
+kMLIRead       = $CA
+kMLIReadCount  = 4
+kMLIClose      = $CC
+kMLICloseCount = 1
+kMLISetMark    = $CE
+kMLISetMarkCount = 2
+kMLIQuit       = $65
+kMLIQuitCount  = 4
+;
+; ROM addresses
+;
+ROM80STOREOFF  = $C000
+KEY            = $C000
+WRITEMAINMEM   = $C004
+WRITEAUXMEM    = $C005
+;
+; memory map
+;
+; 0800..0AFF      relocated program code
+; 0800..0AFF[aux] copy of program code
+; 1600..17FF      buffer for directory block
+; 1800..1BFF      ProDOS file buffer for reading directory
+; 1C00..1FFF      ProDOS file buffer for reading file
+; 2000..3FFF      graphics page 1 [shown]
+; 2000..3FFF[aux] graphics page 1 [shown]
+; 4000..5FFF      offscreen buffer for next graphic file
+; 4000..5FFF[aux] offscreen buffer for next graphic file
+;
+
+         jmp   Start                 ; magic jump
+         !byte $EE,$EE               ; magic bytes
+         !byte $40                   ; length of inputbuffer
+inputbuffer
+         !fill $40
+Start
+!cpu 65816
+         sep   #2                    ; set Z flag on 65816 only
+!cpu 6502
+         bne   +                     ; skip GS-specific code on non-GS machines (required, will crash on //c, grr)
+         lda   $C029
+         and   #$1F
+         sta   $C029                 ; set GS NEWVIDEO mode to turn off linearize
++
+         lda   RAM32                 ; search for /RAM and disconnect if found
+         cmp   NODEV
+         bne   +
+         lda   RAM32+1
+         cmp   NODEV+1
+         beq   noRAMdisk
++        ldy   DEVCNT
+-        lda   DEVLST, y
+         and   #$F3
+         cmp   #$B3
+         beq   foundRAMdisk
+         dey
+         bpl   -
+         bmi   noRAMdisk
+foundRAMdisk
+         lda   DEVLST, y
+         sta   saveRAMDiskUnit       ; save RAM disk unit number
+-        lda   DEVLST+1, y           ; move other devices up in list
+         sta   DEVLST, y
+         beq   +                     ; device list is zero-terminated
+         iny
+         bne   -                     ; always branches
++        lda   RAM32
+         sta   saveRAMDiskDriver     ; save RAM disk device address
+         lda   RAM32+1
+         sta   saveRAMDiskDriver+1
+         lda   NODEV                 ; tell ProDOS there's no RAM disk anymore
+         sta   RAM32
+         lda   NODEV+1
+         sta   RAM32+1
+         dec   DEVCNT                ; reduce ProDOS device count
+noRAMdisk
+         sta   ROM80STOREOFF
+         ldx   #$00                  ; copy code to lower memory so we can load graphic at $2000
+-        lda   CodeStart, x
+         sta   $0800, x
+         lda   CodeStart+$100, x
+         sta   $0900, x
+         lda   CodeStart+$200, x
+         sta   $0A00, x
+         sta   WRITEAUXMEM
+         lda   CodeStart, x          ; also copy it to aux memory so fizzle fade can freely switch back and forth
+         sta   $0800, x
+         lda   CodeStart+$100, x
+         sta   $0900, x
+         lda   CodeStart+$200, x
+         sta   $0A00, x
+         sta   WRITEMAINMEM
+         inx
+         bne   -
+
+         jmp   $0800
+
+CodeStart
+!pseudopc $800 {
+         jsr   CheckFor128K          ; does not return if we have less than 128K
+         lda   #kMLIGetPrefix
+         ldy   #kMLIGetPrefixCount
+         ldx   #FALSE                ; do not return to caller on error
+         jsr   CallMLI               ; get current prefix
+
+         lda   #kMLIOpen
+         ldy   #kMLIOpenCount
+         ldx   #FALSE                ; do not return to caller on error
+         jsr   CallMLI               ; open directory as file
+
+         lda   mliparam+5            ; directory refnum
+         sta   saveDirRefnum
+ReadFirstDirectoryBlock
+         lda   foundAtLeastOne       ; if we've gone through the entire directory and ended up
+         beq   +                     ; back here without ever finding a suitable file to display,
+         jmp   CloseAll              ; just quit
++        lda   #FALSE
+         sta   foundAtLeastOne
+         lda   #$00
+         sta   entryLength
+         sta   mliparam+2            ; position for MLI_SET_MARK
+         sta   mliparam+3
+         sta   mliparam+4
+         lda   saveDirRefnum
+         sta   mliparam+1
+         lda   #kMLISetMark
+         ldy   #kMLISetMarkCount
+         ldx   #FALSE                ; do not return to caller on error
+         jsr   CallMLI               ; set mark of directory file back to the beginning (position 000000)
+ReadNextDirectoryBlock
+         lda   saveDirRefnum
+         sta   mliparam+1            ; refnum for directory-as-file
+         lda   #<aDirData
+         sta   mliparam+2
+         lda   #>aDirData+1
+         sta   mliparam+3            ; store in (aDirData)
+         lda   #$00
+         sta   mliparam+4
+         lda   #$02                  ; read $0200 bytes (= 2 sectors, = 1 ProDOS block)
+         sta   mliparam+5
+         lda   #kMLIRead
+         ldy   #kMLIReadCount
+         ldx   #TRUE                 ; always return to caller, even if there is an error
+         jsr   CallMLI               ; MLI_READ to read a directory block
+         bcc   firstTimeSetup        ; check error manually
+         cmp   #$4C                  ; MLI error was EOF?
+         beq   ReadFirstDirectoryBlock;yes, start over at the beginning of directory
+         bne   CloseAll              ; no, real error
+firstTimeSetup
+         lda   entryLength
+         bne   skipFirstTime
+         lda   aDirData+$23
+         sta   entryLength
+         lda   aDirData+$24
+         sta   entriesPerBlock
+skipFirstTime
+         lda   #<(aDirData+4)
+         sta   entry
+         lda   #>(aDirData+4)
+         sta   entry+1
+         lda   entriesPerBlock
+         sta   entriesRemaining
+GoToNextEntry
+         dec   entriesRemaining
+         beq   ReadNextDirectoryBlock
+         lda   entry
+         clc
+         adc   entryLength
+         sta   entry
+         lda   entry+1
+         adc   #$00
+         sta   entry+1
+         ldy   #$00
+         lda   (entry), y
+         and   #$F0
+         cmp   #$00
+         beq   GoToNextEntry         ; skip inactive entry
+         cmp   #$D0
+         beq   GoToNextEntry         ; skip subdirectory
+         ldy   #$00
+         lda   (entry), y            ; get filename length
+         and   #$0F
+         sta   (entry), y            ; store actual length so we can use this as a length-prefixed string later
+         cmp   #$06
+         bcc   GoToNextEntry         ; filename not long enough, skip entry
+         tay
+         ldx   #$04
+-        lda   (entry), y
+         cmp   suffix, x             ; match required suffix ('.A2FC')
+         bne   GoToNextEntry         ; no match, skip entry
+         dey
+         dex
+         bpl   -
+         lda   #TRUE
+         sta   foundAtLeastOne
+         jsr   DisplayFile
+         lda   #$00
+         ldy   #$15
+.wait0   sec
+.wait1   pha
+.wait2   sbc   #$01
+         bne   .wait2
+         pla
+         ldx   KEY
+         bmi   CloseAll
+         sbc   #$01
+         bne   .wait1
+         dey
+         bpl   .wait0
+         bmi   GoToNextEntry
+
+CloseAll
+         lda   #$00
+         sta   mliparam+1            ; close all open files
+         lda   #kMLIClose
+         ldy   #kMLICloseCount
+         ldx   #TRUE                 ; always return to caller, even on error (which we will ignore)
+         jsr   CallMLI
+                                     ; execution falls through here
+
+Quit
+         lda   saveRAMDiskUnit
+         beq   noReconnect
+         ldy   DEVCNT                ; reconnect /RAM
+-        lda   DEVLST
+         and   #$F0
+         cmp   #$B0
+         beq   noReconnect
+         dey
+         bpl   -
+         lda   saveRAMDiskDriver     ; restore /RAM driver
+         sta   RAM32
+         lda   saveRAMDiskDriver+1
+         sta   RAM32+1
+         inc   DEVCNT                ; insert /RAM unit into front of device list
+         ldy   DEVCNT
+-        lda   DEVLST-1, y
+         sta   DEVLST
+         dey
+         bne   -
+         lda   #$03                  ; format /RAM
+         sta   $42
+         lda   saveRAMDiskUnit
+         sta   DEVLST
+         and   #$F0
+         sta   $43
+         lda   #<aFileBuff
+         sta   $44
+         lda   #>aFileBuff
+         sta   $45
+         lda   $C08B
+         lda   $C08B
+         jsr   CallRAMDriver
+         bit   $C082
+noReconnect
+         bit   $C010                 ; reset keyboard strobe on the way out
+         lda   #kMLIQuit
+         ldy   #kMLIQuitCount
+                                     ; execution falls through here
+
+CallMLI
+         sta   mlicmd
+         sty   mliparam
+         jsr   MLI
+mlicmd   !byte $00
+         !word mliparam
+         bcc   +                     ; no MLI error, so return
+         cpx   #TRUE                 ; MLI error, so check if caller wants us to return or not
+         bne   CloseAll              ; caller said don't return on error, so close and quit
++        rts
+mliparam
+         !byte 0
+         !word inputbuffer
+         !word aDirBuff
+         !byte 0,0,0                 ; extra space for MLI_READ (longest parameter block)
+
+CheckFor128K
+         lda   MACHID
+         and   #$30
+         cmp   #$30
+         bne   Quit
+         rts
+
+         !source "fizzledhgr.a"
+
+DisplayFile
+         lda   entry
+         sta   mliparam+1            ; (entry) points to filename in aDirData
+         lda   entry+1
+         sta   mliparam+2
+         lda   #<aFileBuff
+         sta   mliparam+3
+         lda   #>aFileBuff
+         sta   mliparam+4
+         lda   #kMLIOpen
+         ldy   #kMLIOpenCount
+         ldx   #FALSE
+         jsr   CallMLI               ; open .a2fc file
+         lda   KEY
+         bpl   +
+         rts
++        lda   mliparam+5
+         sta   saveFileRefnum
+         sta   mliparam+1
+         lda   #$00
+         sta   mliparam+2
+         sta   mliparam+4
+         lda   #$40
+         sta   mliparam+3            ; read into $4000
+         sta   copya+2
+         sta   copyb+2
+         lda   #$20
+         sta   mliparam+5            ; $2000 bytes
+         lda   #kMLIRead
+         ldy   #kMLIReadCount
+         ldx   #FALSE
+         jsr   CallMLI               ; read first half of .a2fc file (will copy to auxmem)
+         lda   KEY
+         bpl   +
+         rts
++        sta   ROM80STOREOFF
+         ldx   #$20                  ; copy $2000 bytes to auxmem
+         ldy   #$00
+copyToAux
+         sta   WRITEAUXMEM
+copya    lda   $FF00, y              ; self-modified address
+copyb    sta   $FF00, y              ; self-modified address
+         iny
+         bne   copya
+         sta   WRITEMAINMEM
+         inc   copya+2
+         inc   copyb+2
+         dex
+         bne   copyToAux
+         lda   #kMLIRead
+         ldy   #kMLIReadCount
+         ldx   #FALSE
+         jsr   CallMLI               ; read second half of .a2fc file (stays in main memory)
+         lda   #kMLIClose
+         ldy   #kMLICloseCount
+         ldx   #FALSE
+         jsr   CallMLI
+         jmp   Fizzle                ; fancy memory copy from page 2 to 1
+
+CallRAMDriver
+         jmp   (RAM32)
+;
+; global variables
+;
+saveRAMDiskUnit
+         !byte 0
+saveRAMDiskDriver
+         !word 0
+entryLength
+         !byte $00
+entriesPerBlock
+         !byte $00
+entriesRemaining
+         !byte $00
+foundAtLeastOne
+         !byte TRUE
+saveDirRefnum
+         !byte $00
+saveFileRefnum
+         !byte $00
+suffix
+         !text ".A2FC"
+}
+CodeEnd

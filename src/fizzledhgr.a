@@ -1,0 +1,83 @@
+;license:MIT
+;(c) 2017-2018 by qkumba
+;
+; assumes this code is in an identical location in auxmem
+; (currently taken care of in dhrslide.system.a)
+;
+Fizzle
+        ;graphics mode
+
+        sta     $c00d
+        sta     $c057
+        sta     $c052
+        sta     $c050
+        sta     $c05e
+
+        ;init RNG
+
+        ldx     #1
+        stx     rndval1+1
+        dex
+        stx     rndval2+1
+
+        ;iterate
+
+-       ldy     rndval1+1
+        ldx     rndval2+1
+        lsr     rndval2+1
+        ror     rndval1+1
+        bcc     +
+
+        ;feedback polynomial forms #$2015 for period of 16383
+
+        lda     rndval1+1
+        eor     #$15
+        sta     rndval1+1
+        lda     rndval2+1
+        eor     #$20
+        sta     rndval2+1
+
+        ;little hack to avoid missing offset zero
+        ;screen hole at $xxFF is missed instead
+
++       tya
+        eor     #$ff
+        sta     $26
+        sta     $3c
+        txa
+        and     #$1f
+
+        ;target page 1
+
+        ora     #$20
+        sta     $27
+        eor     #$60
+        sta     $3d
+
+        ;copy pixel from other page to this page
+
+        ldy     #0
+        cpx     #$20
+        bcc     +
+        sta     $c003
+        sta     $c005
++       lda     ($3c),y
+        sta     ($26),y
+        sta     $c002
+        sta     $c004
+
+        ;check for keypress
+
+        lda     $c000
+        bmi     fizzledone
+
+        ;and exit condition
+
+rndval2 lda     #0
+        bne     -
+rndval1 lda     #0
+        cmp     #1
+        bne     -
+
+fizzledone
+        rts
