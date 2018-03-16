@@ -5,14 +5,6 @@
 ; (currently taken care of in dhrslide.system.a)
 ;
 Fizzle
-        ;graphics mode
-
-        sta     $c00d
-        sta     $c057
-        sta     $c052
-        sta     $c050
-        sta     $c05e
-
         ;init RNG
 
         ldx     #1
@@ -78,6 +70,15 @@ rndval2 lda     #0
 rndval1 lda     #0
         cmp     #1
         bne     -
+
+        ;graphics mode
+
+        sta     $c00d
+        sta     $c057
+        sta     $c054
+        sta     $c052
+        sta     $c050
+        sta     $c05e
 
 fizzledone
         rts
