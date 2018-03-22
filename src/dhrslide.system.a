@@ -5,12 +5,14 @@
 ; DHRSLIDE.SYSTEM
 ; (c) 2018 by 4am
 ; a small DHGR graphics slideshow
-; loads first .a2fc file in current directory,
+; loads first double hi-res graphics file (*) in current directory,
 ; displays it,
 ; waits,
-; finds next .a2fc file in same directory,
+; finds next suitable file in same directory,
 ; repeats endlessly until keypress,
 ; quits via MLI
+;
+; (*) a double hi-res graphics file has type $06 (BIN) and length $4000
 ;
 ; known bugs:
 ; - does not reconnect /RAM properly, not sure why
@@ -222,23 +224,22 @@ GoToNextEntry
          beq   GoToNextEntry         ; skip inactive entry
          cmp   #$D0
          beq   GoToNextEntry         ; skip subdirectory
-         ldy   #$00
-         lda   (entry), y            ; get filename length
-         and   #$0F
-         sta   (entry), y            ; store actual length so we can use this as a length-prefixed string later
+         ldy   #$10
+         lda   (entry), y
          cmp   #$06
-         bcc   GoToNextEntry         ; filename not long enough, skip entry
-         tay
-         ldx   #$04
--        lda   (entry), y
-         cmp   suffix, x             ; match required suffix ('.A2FC')
-         bne   GoToNextEntry         ; no match, skip entry
+         bne   GoToNextEntry         ; BIN files only
+         ldy   #$15
+         lda   (entry), y
+         bne   GoToNextEntry         ; wrong size (must be exactly $4000)
+         ldy   #$17
+         lda   (entry), y
+         bne   GoToNextEntry         ; wrong size
          dey
-         dex
-         bpl   -
-         lda   #TRUE
-         sta   foundAtLeastOne
+         lda   (entry), y
+         cmp   #$40
+         bne   GoToNextEntry         ; wrong size
          jsr   DisplayFile
+                                     ; wait loop that exits immediately on keypress
          lda   #$00
          ldy   #$15
 .wait0   sec
@@ -252,7 +253,7 @@ GoToNextEntry
          bne   .wait1
          dey
          bpl   .wait0
-         bmi   GoToNextEntry
+         bmi   GoToNextEntry         ; always branches
 
 CloseAll
          lda   #$00
@@ -329,6 +330,10 @@ CheckFor128K
          !source "fizzledhgr.a"
 
 DisplayFile
+         ldy   #$00
+         lda   (entry), y            ; get storage type / filename length combination byte
+         and   #$0F                  ; trim storage type
+         sta   (entry), y            ; store actual length so we can use this as a length-prefixed string
          lda   entry
          sta   mliparam+1            ; (entry) points to filename in aDirData
          lda   entry+1
@@ -385,6 +390,8 @@ copyb    sta   $FF00, y              ; self-modified address
          ldy   #kMLICloseCount
          ldx   #FALSE
          jsr   CallMLI
+         lda   #TRUE
+         sta   foundAtLeastOne
          jmp   Fizzle                ; fancy memory copy from page 2 to 1
 
 CallRAMDriver
@@ -408,7 +415,5 @@ saveDirRefnum
          !byte $00
 saveFileRefnum
          !byte $00
-suffix
-         !text ".A2FC"
 }
 CodeEnd
