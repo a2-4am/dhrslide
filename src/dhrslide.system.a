@@ -129,6 +129,8 @@ noRAMdisk
          sta   $0900, x
          lda   CodeStart+$200, x
          sta   $0A00, x
+         lda   CodeStart+$300, x
+         sta   $0B00, x
          sta   WRITEAUXMEM
          lda   CodeStart, x          ; also copy it to aux memory so fizzle fade can freely switch back and forth
          sta   $0800, x
@@ -136,6 +138,8 @@ noRAMdisk
          sta   $0900, x
          lda   CodeStart+$200, x
          sta   $0A00, x
+         lda   CodeStart+$300, x
+         sta   $0B00, x
          sta   WRITEMAINMEM
          inx
          bne   -
@@ -154,6 +158,8 @@ CodeStart
          ldy   #kMLIOpenCount
          ldx   #FALSE                ; do not return to caller on error
          jsr   CallMLI               ; open directory as file
+
+         jsr   DisableAccelerator
 
          lda   mliparam+5            ; directory refnum
          sta   saveDirRefnum
@@ -265,6 +271,7 @@ CloseAll
                                      ; execution falls through here
 
 Quit
+         jsr   EnableAccelerator
          lda   saveRAMDiskUnit
          beq   noReconnect
          ldy   DEVCNT                ; reconnect /RAM
@@ -328,6 +335,7 @@ CheckFor128K
          rts
 
          !source "fizzledhgr.a"
+         !source "normfast.a"
 
 DisplayFile
          ldy   #$00
